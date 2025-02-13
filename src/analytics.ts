@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs';
 import { Analytics } from '@segment/analytics-node';
 import { CommonProps } from './types.js';
 import pkg from './pkg.js';
@@ -19,6 +18,7 @@ export const sendError = (error: Error) => {
   if (!analytics) return;
   analytics.track({
     event: 'Error',
+    anonymousId: 'anonymous',
     properties: {
       error: error.message,
       stack: error.stack,
@@ -33,6 +33,7 @@ export const trackEvent = (
   if (!analytics) return;
   analytics.track({
     event,
+    anonymousId: 'anonymous',
     properties,
   });
 };
@@ -59,24 +60,7 @@ export const analyticsMiddleware = () => {
       log.debug('No API key found, skipping analytics');
       return;
     }
-    try {
-      const credentials = JSON.parse(
-        readFileSync('/home/user/.config/neonctl/credentials.json', 'utf-8'),
-      );
-      initAnalytics();
-      if (analytics) {
-        analytics.identify({
-          userId: credentials.user_id,
-          traits: {
-            email: credentials.email,
-          },
-        });
-      }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-        log.debug('Failed to read credentials file', error);
-      }
-    }
+    initAnalytics();
   } catch (error) {
     log.debug('Error in analytics middleware', error);
   }

@@ -3,21 +3,35 @@ import { isAxiosError } from 'axios';
 
 import { log } from './log.js';
 import pkg from './pkg.js';
+import { retrieveApiKey, apiKeyExists } from './keyStorage.js';
 
 export type ApiCallProps = {
-  apiKey: string;
+  apiKey?: string;
   apiHost?: string;
 };
 
-export const getApiClient = ({ apiKey, apiHost }: ApiCallProps) =>
-  createApiClient({
-    apiKey,
+export const getApiClient = ({ apiKey, apiHost }: ApiCallProps) => {
+  const effectiveApiKey = apiKey || retrieveApiKey();
+  if (!effectiveApiKey) {
+    if (!apiKeyExists()) {
+      throw new Error(
+        'No API key found. Please authenticate using "neon auth" command.',
+      );
+    } else {
+      throw new Error(
+        'Failed to retrieve API key. Please try authenticating again using "neon auth" command.',
+      );
+    }
+  }
+  return createApiClient({
+    apiKey: effectiveApiKey,
     baseURL: apiHost,
     timeout: 60000,
     headers: {
       'User-Agent': `neonctl v${pkg.version}`,
     },
   });
+};
 
 const RETRY_COUNT = 5;
 const RETRY_DELAY = 3000;

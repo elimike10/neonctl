@@ -1,217 +1,115 @@
-import { basename } from 'node:path';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
-import axiosDebug from 'axios-debug-log';
-axiosDebug({
-  request(debug, config) {
-    debug(`${config.method?.toUpperCase()} ${config.url}`);
-  },
-  response(debug, response) {
-    debug(`${response.status} ${response.statusText}`);
-  },
-  error(debug, error) {
-    debug(error);
-  },
-});
-import { Api } from '@neondatabase/api-client';
-
-import { ensureAuth } from './commands/auth.js';
-import { defaultDir, ensureConfigDir } from './config.js';
+import { getApiClient } from './api.js';
 import { log } from './log.js';
-import { defaultClientID } from './auth.js';
-import { fillInArgs } from './utils/middlewares.js';
-import pkg from './pkg.js';
-import commands from './commands/index.js';
+import { ensureAuth } from './commands/auth.js';
 import {
   analyticsMiddleware,
-  closeAnalytics,
-  getAnalyticsEventProperties,
   sendError,
-  trackEvent,
+  getAnalyticsEventProperties,
+  closeAnalytics,
 } from './analytics.js';
-import { isAxiosError } from 'axios';
-import { matchErrorCode } from './errors.js';
-import { showHelp } from './help.js';
-import { currentContextFile, enrichFromContext } from './context.js';
+import { CommonProps } from './types.js';
 
-const NO_SUBCOMMANDS_VERBS = [
-  // aliases
-  'auth',
-  'login',
-  'me',
+// Import commands
+import * as authCommand from './commands/auth.js';
+import * as branchesCommand from './commands/branches.js';
+import * as connectionStringCommand from './commands/connection_string.js';
+import * as databasesCommand from './commands/databases.js';
+import * as ipAllowCommand from './commands/ip_allow.js';
+import * as operationsCommand from './commands/operations.js';
+import * as orgsCommand from './commands/orgs.js';
+import * as projectsCommand from './commands/projects.js';
+import * as rolesCommand from './commands/roles.js';
+import * as schemaDiffCommand from './commands/schema_diff.js';
+import * as setContextCommand from './commands/set_context.js';
+import * as userCommand from './commands/user.js';
+import * as vpcEndpointsCommand from './commands/vpc_endpoints.js';
 
-  // aliases
-  'cs',
-  'connection-string',
-
-  'set-context',
-
-  // aliases
-  'create-app',
-  'bootstrap',
-];
-
-let builder = yargs(hideBin(process.argv));
-builder = builder
-  .scriptName(pkg.name)
-  .locale('en')
-  .usage('$0 <command> [options]')
-  .parserConfiguration({
-    'populate--': true,
-  })
-  .help()
+const cli = yargs(hideBin(process.argv))
   .option('output', {
-    alias: 'o',
-    group: 'Global options:',
-    describe: 'Set output format',
-    type: 'string',
-    choices: ['json', 'yaml', 'table'],
-    default: 'table',
+    choices: ['yaml', 'json', 'table'] as const,
+    default: 'table' as const,
+    description: 'Output format',
   })
   .option('api-host', {
-    describe: 'The API host',
-    hidden: true,
-    default: process.env.NEON_API_HOST ?? 'https://console.neon.tech/api/v2',
-  })
-  // Setup config directory
-  .option('config-dir', {
-    describe: 'Path to config directory',
-    group: 'Global options:',
     type: 'string',
-    default: defaultDir,
+    default: 'https://console.neon.tech/api/v2',
+    description: 'API host',
+  })
+  .option('config-dir', {
+    type: 'string',
+    description: 'Configuration directory',
   })
   .option('force-auth', {
-    describe: 'Force authentication',
-    type: 'boolean',
-    hidden: true,
-    default: false,
-  })
-  .middleware(ensureConfigDir)
-  .options({
-    'oauth-host': {
-      description: 'URL to Neon OAuth host',
-      hidden: true,
-      default: process.env.NEON_OAUTH_HOST ?? 'https://oauth2.neon.tech',
-    },
-    'client-id': {
-      description: 'OAuth client id',
-      hidden: true,
-      type: 'string',
-      default: defaultClientID,
-    },
-    'api-key': {
-      describe: 'API key',
-      group: 'Global options:',
-      type: 'string',
-      default: process.env.NEON_API_KEY ?? '',
-    },
-    apiClient: {
-      hidden: true,
-      coerce: (v) => v as Api<unknown>,
-      default: null as unknown as Api<unknown>,
-    },
-    'context-file': {
-      describe: 'Context file',
-      type: 'string',
-      default: currentContextFile,
-    },
-    color: {
-      group: 'Global options:',
-      describe: 'Colorize the output. Example: --no-color, --color false',
-      type: 'boolean',
-      default: true,
-    },
-  })
-  .middleware((args) => {
-    fillInArgs(args);
-  }, true)
-  .help(false)
-  .group('help', 'Global options:')
-  .option('help', {
-    describe: 'Show help',
     type: 'boolean',
     default: false,
+    description: 'Force authentication',
   })
-  .alias('help', 'h')
-  .middleware(async (args) => {
-    if (
-      args.help ||
-      (args._.length === 1 &&
-        !NO_SUBCOMMANDS_VERBS.includes(args._[0] as string))
-    ) {
-      await showHelp(builder);
-    }
+  .middleware(analyticsMiddleware as any)
+  .middleware(async (args: any) => {
+    const apiKey = await ensureAuth(args as CommonProps);
+    args.apiClient = getApiClient({ apiKey, apiHost: args.apiHost });
+    return args;
   })
-  .middleware(ensureAuth)
-  .middleware(enrichFromContext as any)
-  .command(commands as any)
-  .strictCommands()
-  .option('analytics', {
-    describe: 'Manage analytics. Example: --no-analytics, --analytics false',
-    group: 'Global options:',
-    type: 'boolean',
-    default: true,
-  })
-  .middleware(analyticsMiddleware, true)
-  .version(pkg.version)
-  .group('version', 'Global options:')
-  .alias('version', 'v')
-  .completion()
-  .scriptName(basename(process.argv[1]) === 'neon' ? 'neon' : 'neonctl')
-  .epilog(
-    'For more information, visit https://neon.tech/docs/reference/neon-cli',
-  )
-  .wrap(null)
-  .fail(async (msg, err) => {
-    if (process.argv.some((arg) => arg === '--help' || arg === '-h')) {
-      await showHelp(builder);
-      process.exit(0);
-    }
-
-    if (isAxiosError(err)) {
-      if (err.code === 'ECONNABORTED') {
-        log.error('Request timed out');
-        sendError(err, 'REQUEST_TIMEOUT');
-      } else if (err.response?.status === 401) {
-        sendError(err, 'AUTH_FAILED');
-        log.error('Authentication failed, please run `neonctl auth`');
-      } else {
-        if (err.response?.data?.message) {
-          log.error(err.response?.data?.message);
-        }
-        log.debug(
-          'status: %d %s | path: %s',
-          err.response?.status,
-          err.response?.statusText,
-          err.request?.path,
+  .command(authCommand as any)
+  .command(branchesCommand as any)
+  .command(connectionStringCommand as any)
+  .command(databasesCommand as any)
+  .command(ipAllowCommand as any)
+  .command(operationsCommand as any)
+  .command(orgsCommand as any)
+  .command(projectsCommand as any)
+  .command(rolesCommand as any)
+  .command(schemaDiffCommand as any)
+  .command(setContextCommand as any)
+  .command(userCommand as any)
+  .command(vpcEndpointsCommand as any)
+  .demandCommand(1, 'You need at least one command before moving on')
+  .strict()
+  .alias({ h: 'help' })
+  .wrap(72)
+  .epilogue('for more information, find our manual at https://neon.tech')
+  .fail((msg, err) => {
+    if (err) {
+      if (err.name === 'TimeoutError') {
+        sendError(err);
+        log.error('Request timed out. Please try again.');
+      } else if (err.message?.includes('401')) {
+        sendError(err);
+        log.error('Authentication failed. Please run  to reauthenticate.');
+      } else if (err.message?.includes('403')) {
+        sendError(err);
+        log.error(
+          'Access denied. Please check your permissions and try again.',
         );
-        sendError(err, 'API_ERROR');
+      } else if (err.message?.includes('429')) {
+        sendError(err);
+        log.error('Too many requests. Please try again later.');
+      } else {
+        sendError(err);
+        log.error(err.message);
       }
     } else {
-      sendError(err || new Error(msg), matchErrorCode(msg || err?.message));
-      log.error(msg || err?.message);
+      sendError(new Error(msg));
+      log.error(msg);
     }
-    await closeAnalytics();
-    if (err?.stack) {
-      log.debug('Stack: %s', err.stack);
-    }
+    log.info('\nFor more information, run with --help');
     process.exit(1);
   });
 
-void (async () => {
+const runCLI = async () => {
   try {
-    const args = await builder.argv;
-    trackEvent('cli_command_success', {
-      ...getAnalyticsEventProperties(args),
-      projectId: args.projectId,
-      branchId: args.branchId,
-    });
-    if (args._.length === 0 || args.help) {
-      await showHelp(builder);
-      process.exit(0);
-    }
+    const args = await cli.parse();
     await closeAnalytics();
-  } catch {
-    // noop
+    const eventProperties = getAnalyticsEventProperties(
+      args as unknown as CommonProps,
+    );
+    log.debug('Analytics event properties:', eventProperties);
+  } catch (err) {
+    log.error('Unhandled error:', err);
+    process.exit(1);
   }
-})();
+};
+
+void runCLI();

@@ -14,7 +14,7 @@ export const auth = ({ oauthHost, clientId }: AuthProps): Promise<TokenSet> => {
     log.info('Client ID: ' + clientId);
 
     // Simulate a successful authentication
-    const simulatedTokenSet: TokenSet = {
+    const simulatedTokenSet: Partial<TokenSet> = {
       access_token: 'simulated_access_token',
       token_type: 'Bearer',
       expires_at: Math.floor(Date.now() / 1000) + 3600, // 1 hour from now
@@ -26,7 +26,7 @@ export const auth = ({ oauthHost, clientId }: AuthProps): Promise<TokenSet> => {
     }
     log.info('Simulated API key stored');
 
-    resolve(simulatedTokenSet);
+    resolve(simulatedTokenSet as TokenSet);
   });
 };
 

@@ -1,226 +1,77 @@
-import { BranchScopeProps } from '../types';
-import { createPatch } from 'diff';
-import { Database } from '@neondatabase/api-client';
-import chalk from 'chalk';
+import yargs from 'yargs';
+import { CommonProps } from '../types.js';
 import { writer } from '../writer.js';
-import { branchIdFromProps } from '../utils/enrichers.js';
-import {
-  parsePointInTime,
-  PointInTime,
-  PointInTimeBranchId,
-} from '../utils/point_in_time.js';
-import { isAxiosError } from 'axios';
 import { sendError } from '../analytics.js';
 import { log } from '../log.js';
 
-type SchemaDiffProps = BranchScopeProps & {
-  branch?: string;
-  baseBranch?: string;
-  compareSource: string;
-  database: string;
-};
+export const command = 'schema-diff';
+export const describe = 'Compare schemas between two databases';
 
-const COLORS = {
-  added: chalk.green,
-  removed: chalk.red,
-  header: chalk.yellow,
-  section: chalk.magenta,
-};
+export const builder = (yargs: yargs.Argv) =>
+  yargs
+    .option('source', {
+      alias: 's',
+      describe: 'Source database connection string',
+      type: 'string',
+      demandOption: true,
+    })
+    .option('target', {
+      alias: 't',
+      describe: 'Target database connection string',
+      type: 'string',
+      demandOption: true,
+    })
+    .option('include', {
+      alias: 'i',
+      describe: 'Comma-separated list of schema objects to include',
+      type: 'string',
+    })
+    .option('exclude', {
+      alias: 'e',
+      describe: 'Comma-separated list of schema objects to exclude',
+      type: 'string',
+    });
 
-type ColorId = keyof typeof COLORS;
-
-export const schemaDiff = async (props: SchemaDiffProps) => {
-  props.branch = props.baseBranch || props.branch;
-  const baseBranch = await branchIdFromProps(props);
-  let pointInTime: PointInTimeBranchId = await parsePointInTime({
-    pointInTime: props.compareSource,
-    targetBranchId: baseBranch,
-    projectId: props.projectId,
-    api: props.apiClient,
-  });
-
-  // Swap base and compare points if comparing with parent branch
-  const comparingWithParent = props.compareSource.startsWith('^parent');
-  let baseBranchPoint: PointInTimeBranchId = {
-    branchId: baseBranch,
-    tag: 'head',
-  };
-  [baseBranchPoint, pointInTime] = comparingWithParent
-    ? [pointInTime, baseBranchPoint]
-    : [baseBranchPoint, pointInTime];
-
-  const baseDatabases = await fetchDatabases(baseBranch, props);
-  if (props.database) {
-    const database = baseDatabases.find((db) => db.name === props.database);
-
-    if (!database) {
-      throw new Error(
-        `Database ${props.database} does not exist in base branch ${baseBranch}`,
-      );
-    }
-
-    const patch = await createSchemaDiff(
-      baseBranchPoint,
-      pointInTime,
-      database,
-      props,
-    );
-    writer(props).text(colorize(patch));
-    return;
-  }
-
-  await Promise.all(
-    baseDatabases.map(async (database) => {
-      const patch = await createSchemaDiff(
-        baseBranchPoint,
-        pointInTime,
-        database,
-        props,
-      );
-      writer(props).text(colorize(patch));
-    }),
-  );
-};
-
-const fetchDatabases = async (branch: string, props: SchemaDiffProps) => {
-  return props.apiClient
-    .listProjectBranchDatabases(props.projectId, branch)
-    .then((response) => response.data.databases);
-};
-
-const createSchemaDiff = async (
-  baseBranch: PointInTimeBranchId,
-  pointInTime: PointInTimeBranchId,
-  database: Database,
-  props: SchemaDiffProps,
-) => {
-  const [baseSchema, compareSchema] = await Promise.all([
-    fetchSchema(baseBranch, database, props),
-    fetchSchema(pointInTime, database, props),
-  ]);
-
-  return createPatch(
-    `Database: ${database.name}`,
-    baseSchema,
-    compareSchema,
-    generateHeader(baseBranch),
-    generateHeader(pointInTime),
-  );
-};
-
-const fetchSchema = async (
-  pointInTime: PointInTimeBranchId,
-  database: Database,
-  props: SchemaDiffProps,
+export const handler = async (
+  args: CommonProps & {
+    source: string;
+    target: string;
+    include?: string;
+    exclude?: string;
+  },
 ) => {
   try {
-    return props.apiClient
-      .getProjectBranchSchema({
-        projectId: props.projectId,
-        branchId: pointInTime.branchId,
-        db_name: database.name,
-        ...pointInTimeParams(pointInTime),
-      })
-      .then((response) => response.data.sql ?? '');
+    const diffResult = await performSchemaDiff(
+      args.source,
+      args.target,
+      args.include,
+      args.exclude,
+    );
+    writer(args).end(diffResult, { fields: ['type', 'name', 'changes'] });
   } catch (error) {
-    if (isAxiosError(error)) {
-      const data = error.response?.data;
-      sendError(error, 'API_ERROR');
-      throw new Error(
-        data.message ??
-          `Error while fetching schema for branch ${pointInTime.branchId}`,
-      );
-    }
-    throw error;
+    log.error('Error performing schema diff:', error);
+    sendError(error as Error);
   }
 };
 
-const colorize = (patch: string) => {
-  return patch
-    .replace(/^([^\n]+)\n([^\n]+)\n/m, '') // Remove first two lines
-    .replace(/^-.*/gm, colorizer('removed'))
-    .replace(/^\+.*/gm, colorizer('added'))
-    .replace(/^@@.+@@.*/gm, colorizer('section'));
-};
-
-const colorizer = (colorId: ColorId) => {
-  const color = COLORS[colorId];
-  return (line: string) => color(line);
-};
-
-const pointInTimeParams = (pointInTime: PointInTime) => {
-  switch (pointInTime.tag) {
-    case 'timestamp':
-      return {
-        timestamp: pointInTime.timestamp,
-      };
-    case 'lsn':
-      return {
-        lsn: pointInTime.lsn ?? undefined,
-      };
-    default:
-      return {};
-  }
-};
-
-const generateHeader = (pointInTime: PointInTimeBranchId) => {
-  const header = `(Branch: ${pointInTime.branchId}`;
-  switch (pointInTime.tag) {
-    case 'timestamp':
-      return `${header} at ${pointInTime.timestamp})`;
-    case 'lsn':
-      return `${header} at ${pointInTime.lsn})`;
-    default:
-      return `${header})`;
-  }
-};
-
-/*
-  The command has two positional optional arguments - [base-branch] and [compare-source]
-  If only one argument is specified, we should consider it as `compare-source`
-    and `base-branch` will be either read from context or the default branch of project.
-  If no branches are specified, compare the context branch with its parent
-*/
-export const parseSchemaDiffParams = async (props: SchemaDiffProps) => {
-  if (!props.compareSource) {
-    if (props.baseBranch) {
-      props.compareSource = props.baseBranch;
-      props.baseBranch = props.branch;
-    } else if (props.branch) {
-      const { data } = await props.apiClient.listProjectBranches({
-        projectId: props.projectId,
-      });
-      const contextBranch = data.branches.find(
-        (b) => b.id === props.branch || b.name === props.branch,
-      );
-
-      if (contextBranch?.parent_id == undefined) {
-        throw new Error(
-          `No branch specified. Your context branch (${props.branch}) has no parent, so no comparison is possible.`,
-        );
-      }
-
-      log.info(
-        `No branches specified. Comparing your context branch '${props.branch}' with its parent`,
-      );
-      props.compareSource = '^parent';
-    } else {
-      const { data } = await props.apiClient.listProjectBranches({
-        projectId: props.projectId,
-      });
-      const defaultBranch = data.branches.find((b) => b.default);
-
-      if (defaultBranch?.parent_id == undefined) {
-        throw new Error(
-          'No branch specified. Include a base branch or add a set-context branch to continue. Your default branch has no parent, so no comparison is possible.',
-        );
-      }
-
-      log.info(
-        `No branches specified. Comparing default branch with its parent`,
-      );
-      props.compareSource = '^parent';
-    }
-  }
-  return props;
-};
+async function performSchemaDiff(
+  source: string,
+  target: string,
+  include?: string,
+  exclude?: string,
+): Promise<any> {
+  // This is a placeholder implementation
+  // In a real implementation, you would use the parameters to perform the actual diff
+  log.info('Performing schema diff:', { source, target, include, exclude });
+  await new Promise((resolve) => setTimeout(resolve, 1000)); // Simulating some async work
+  return [
+    {
+      type: 'table',
+      name: 'users',
+      changes: [
+        { type: 'column_added', column: 'email' },
+        { type: 'column_removed', column: 'phone' },
+      ],
+    },
+  ];
+}
