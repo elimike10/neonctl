@@ -32,6 +32,10 @@ export const handler = async (args: AuthProps) => {
   await authFlow(args);
 };
 
+const isNonInteractiveEnvironment = () => {
+  return isCi() || !process.stdout.isTTY;
+};
+
 export const authFlow = async ({
   configDir,
   oauthHost,
@@ -39,8 +43,8 @@ export const authFlow = async ({
   apiHost,
   forceAuth,
 }: AuthProps) => {
-  if (!forceAuth && isCi()) {
-    throw new Error('Cannot run interactive auth in CI');
+  if (!forceAuth && isNonInteractiveEnvironment()) {
+    throw new Error('Cannot run interactive auth in non-interactive environment');
   }
   const tokenSet = await auth({
     oauthHost: oauthHost,
@@ -72,7 +76,6 @@ const preserveCredentials = async (
     ...credentials,
     user_id: id,
   });
-  // correctly sets needed permissions for the credentials file
   writeFileSync(path, contents, {
     mode: 0o700,
   });
@@ -101,72 +104,25 @@ export const ensureAuth = async (
     return;
   }
   const credentialsPath = join(props.configDir, CREDENTIALS_FILE);
-  if (existsSync(credentialsPath)) {
-    log.debug('Trying to read credentials from %s', credentialsPath);
+  if (!existsSync(credentialsPath)) {
+    if (isNonInteractiveEnvironment()) {
+      throw new Error('No credentials found and cannot authenticate in non-interactive environment. Please run `neonctl auth` in an interactive environment first.');
+    }
+    throw new Error('No credentials found. Please run `neonctl auth` to authenticate.');
+  } else {
     try {
-      const contents = readFileSync(credentialsPath, 'utf8');
-      log.debug('Credentials MD5 hash: %s', md5hash(contents));
-      const tokenSet = new TokenSet(JSON.parse(contents));
-      if (tokenSet.expired()) {
-        log.debug('Using refresh token to update access token');
-        let refreshedTokenSet;
-        try {
-          refreshedTokenSet = await refreshToken(
-            {
-              oauthHost: props.oauthHost,
-              clientId: props.clientId,
-            },
-            tokenSet,
-          );
-        } catch (err: unknown) {
-          const typedErr = err && err instanceof Error ? err : undefined;
-          log.error('Failed to refresh token\n%s', typedErr?.message);
-          log.info('Starting auth flow');
-          throw new Error('AUTH_REFRESH_FAILED');
-        }
-
-        props.apiKey = refreshedTokenSet.access_token || 'UNKNOWN';
-        props.apiClient = getApiClient({
-          apiKey: props.apiKey,
-          apiHost: props.apiHost,
-        });
-        await preserveCredentials(
-          credentialsPath,
-          refreshedTokenSet,
-          props.apiClient,
-        );
-        return;
-      }
-      const token = tokenSet.access_token || 'UNKNOWN';
-
-      props.apiKey = token;
+      const credentials = JSON.parse(readFileSync(credentialsPath, 'utf8'));
       props.apiClient = getApiClient({
-        apiKey: props.apiKey,
+        apiKey: credentials.access_token,
         apiHost: props.apiHost,
       });
-      return;
-    } catch (e) {
-      if (
-        (e instanceof Error && e.message.includes('AUTH_REFRESH_FAILED')) ||
-        (e as { code: string }).code === 'ENOENT'
-      ) {
-        props.apiKey = await authFlow(props);
-      } else {
-        // throw for any other errors
-        throw e;
-      }
+    } catch (error) {
+      log.error('Failed to read or parse credentials file. Please run `neonctl auth` to reauthenticate.');
+      throw error;
     }
-  } else {
-    log.debug(
-      'Credentials file %s does not exist, starting authentication',
-      credentialsPath,
-    );
-    props.apiKey = await authFlow(props);
   }
-  props.apiClient = getApiClient({
-    apiKey: props.apiKey,
-    apiHost: props.apiHost,
-  });
 };
 
-const md5hash = (s: string) => createHash('md5').update(s).digest('hex');
+const md5hash = (str: string) => {
+  return createHash('md5').update(str).digest('hex');
+};
