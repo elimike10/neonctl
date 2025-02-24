@@ -159,3 +159,9 @@ To run commands from the local build, replace the `neonctl` command with `node d
 ```shell
 node dist branches --help
 ```
+
+## Authentication
+
+When using the `neon me` command, if no valid credentials are found, you will be prompted to authenticate using the `neonctl auth` command. This ensures that your credentials are always up-to-date and valid.
+
+If you encounter an "Authentication failed" or "Token expired" error, please run `neonctl auth` to re-authenticate.
